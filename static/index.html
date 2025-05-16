@@ -209,17 +209,17 @@
                     <div class="result-container">
                         <div class="result-item">
                             <h3>結合画像</h3>
-                            <img src="${data.output_path}" alt="Combined Result">
+                            <img src="data:image/png;base64,${data.combine_data}" alt="Combined Result">
                         </div>
                         <div class="result-item">
                             <h3>マスク画像</h3>
-                            <img src="${data.mask_path}" alt="Mask Result">
+                            <img src="data:image/png;base64,${data.mask_data}" alt="Mask Result">
                         </div>
                     </div>
                 
                     <div class="result-play">
-                        <img src="${data.mask_path}" alt="Mask Result">
-                        <img src="${data.output_path}" alt="Combined Result">
+                        <img src="data:image/png;base64,${data.mask_data}" alt="Mask Result">
+                        <img src="data:image/png;base64,${data.combine_data}" alt="Combined Result">
                     </div>
                 `;
             } catch (error) {

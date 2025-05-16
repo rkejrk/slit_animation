@@ -1,4 +1,4 @@
-use image::{ImageBuffer, Rgba, GenericImageView, io::Reader as ImageReader, AnimationDecoder, DynamicImage};
+use image::{ImageBuffer, Rgba, GenericImageView, AnimationDecoder, DynamicImage};
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
@@ -7,6 +7,7 @@ use actix_files as fs;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use futures::{StreamExt, TryStreamExt};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 #[derive(Deserialize)]
 struct SlitParams {
@@ -17,18 +18,17 @@ struct SlitParams {
 #[derive(Serialize)]
 struct ProcessResponse {
     message: String,
-    output_path: String,
-    mask_path: String,
+    combine_data: String,
+    mask_data: String,
 }
 
 // Apply slit transparency effect to a single image
 fn apply_slit_transparency(
     img: &DynamicImage,
-    output_image_path: &str,
     slit_width: u32,
     slit_spacing: u32,
     frame_number: u32,
-) {
+) -> DynamicImage {
     let (width, height) = img.dimensions();
     println!("Processing image with dimensions: {}x{}", width, height);
 
@@ -47,54 +47,22 @@ fn apply_slit_transparency(
             pixel
         }
     });
-
-    // Save the output image
-    match output_img.save(output_image_path) {
-        Ok(_) => println!("Output saved to {}", output_image_path),
-        Err(e) => println!("Error saving output image: {:?}", e),
-    }
+    return DynamicImage::ImageRgba8(output_img);
 }
 
 // Process a GIF file, extracting each frame and applying the effect
 fn process_gif_file(
     input_path: &str,
-    output_dir: &str,
     slit_width: u32,
     slit_spacing: u32,
     frame_count: u32,
-) {
-    // Create output directory if it doesn't exist
-    std::fs::create_dir_all(output_dir).expect("Failed to create output directory");
-
-    // Open the GIF file
-    let file = match File::open(input_path) {
-        Ok(file) => file,
-        Err(e) => {
-            println!("Error opening file: {:?}", e);
-            return;
-        }
-    };
-    
-    let reader = BufReader::new(file);
-    
-    // Use with_format to explicitly specify GIF format
-    let decoder = match ImageReader::new(reader)
-        .with_guessed_format()
-        .unwrap()
-        .decode() {
-        Ok(data) => data,
-        Err(e) => {
-            println!("Error decoding GIF: {:?}", e);
-            return;
-        }
-    };
-
+) -> Vec<DynamicImage>{        
     // For GIF files, we need to re-open to get the frames
     let file = match File::open(input_path) {
         Ok(file) => file,
         Err(e) => {
             println!("Error reopening file: {:?}", e);
-            return;
+            return vec![];
         }
     };
     
@@ -102,7 +70,7 @@ fn process_gif_file(
     let mut buffer = Vec::new();
     if let Err(e) = reader.read_to_end(&mut buffer) {
         println!("Error reading file: {:?}", e);
-        return;
+        return vec![];
     }
     
     // Decode GIF frames
@@ -110,65 +78,40 @@ fn process_gif_file(
         Ok(decoder) => decoder.into_frames().collect_frames().expect("Failed to collect frames"),
         Err(e) => {
             println!("Error creating GIF decoder: {:?}", e);
-            return;
+            return vec![];
         }
     };
     
     println!("Found {} frames in the GIF", frames.len());
     
     // Process each frame
+    let mut processed_frames = vec![];
     let frames_per_file = frames.len() as u32 / frame_count;
     let mut count = 0;
     for (i, frame) in frames.into_iter().enumerate() {
         if i as u32 % frames_per_file == 0 {
             let frame_img = DynamicImage::ImageRgba8(frame.into_buffer());
-            let output_path = format!("{}/frame_{:03}.png", output_dir, i);
-            apply_slit_transparency(&frame_img, &output_path, slit_width, slit_spacing, count);
+            processed_frames.push(apply_slit_transparency(&frame_img, slit_width, slit_spacing, count));
             count += 1;
         }
     }
-    
-    println!("All frames processed and saved to {}", output_dir);
+
+    return processed_frames; 
 }
 
 // Combine multiple PNG files, skipping transparent pixels
 fn combine_png_files_skip_transparent(
-    input_dir: &str,
-    output_path: &str,
-) {
-    // Get all PNG files in the directory
-    let mut files: Vec<_> = std::fs::read_dir(input_dir)
-        .expect("Failed to read directory")
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let path = entry.path();
-            if path.extension()? == "png" {
-                Some(path)
-            } else {
-                None
-            }
-        })
-        .collect();
-    
-    // Sort files by name
-    files.sort();
-    
-    if files.is_empty() {
-        println!("No PNG files found in directory");
-        return;
-    }
-
+    frames: Vec<DynamicImage>
+) -> Vec<u8> {
     // Load the first image to get dimensions
-    let first_img = image::open(&files[0]).expect("Failed to open first image");
+    let first_img = frames.first().expect("データの読み込みに失敗しました。");
     let (width, height) = first_img.dimensions();
     
     // Create a new image buffer with RGBA pixels
     let mut combined_img = ImageBuffer::new(width, height);
     
     // Process each file
-    for file_path in files.iter() {
-        let img = image::open(file_path).expect("Failed to open image");
-        
+    for img in frames.iter() {
         // Copy non-transparent pixels
         for y in 0..height {
             for x in 0..width {
@@ -181,28 +124,27 @@ fn combine_png_files_skip_transparent(
         }
     }
     
-    // Save the combined image
-    match combined_img.save(output_path) {
-        Ok(_) => println!("Combined image saved to {}", output_path),
-        Err(e) => println!("Error saving combined image: {:?}", e),
-    }
+    // PNGとしてエンコード
+    let mut png_data = Vec::new();
+    let dynamic_img = DynamicImage::ImageRgba8(combined_img);
+    dynamic_img.write_to(&mut std::io::Cursor::new(&mut png_data), image::ImageFormat::Png)
+        .expect("PNGエンコードに失敗しました");
+    
+    return png_data;
 }
 
 // Create a striped mask image
 fn create_stripe_mask(
-    combined_output: &str,
+    width: u32,
+    height: u32,
     stripe_width: u32,
-    stripe_spacing: u32,
-    output_path: &str,
-) { 
-    let img = image::open(combined_output).expect("Failed to open combined image");
-    let (width, height) = img.dimensions();
+    stripe_spacing: u32
+) -> Vec<u8> {
     // Create a new image buffer with RGBA pixels
     let mut mask_image: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::new(width, height);
     
     for y in 0..height {
         for x in 0..width {
-            let pixel = img.get_pixel(x, y);
             if x % (stripe_spacing + stripe_width) < stripe_width {
                 // Black stripe (fully transparent)
                 mask_image.put_pixel(x, y, Rgba([0,0,0,0]));
@@ -213,11 +155,13 @@ fn create_stripe_mask(
         }
     }
     
-    // Save the mask image
-    match mask_image.save(output_path) {
-        Ok(_) => println!("Stripe mask saved to {}", output_path),
-        Err(e) => println!("Error saving stripe mask: {:?}", e),
-    }
+    // PNGとしてエンコード
+    let mut png_data = Vec::new();
+    let dynamic_img = DynamicImage::ImageRgba8(mask_image);
+    dynamic_img.write_to(&mut std::io::Cursor::new(&mut png_data), image::ImageFormat::Png)
+        .expect("PNGエンコードに失敗しました");
+    
+    return png_data;
 }
 
 async fn process_image(mut payload: Multipart) -> impl Responder {
@@ -273,33 +217,26 @@ async fn process_image(mut payload: Multipart) -> impl Responder {
         Some(path) => path,
         None => return HttpResponse::BadRequest().body("ファイルがアップロードされていません"),
     };
-
-    let output_dir = format!("static/output_{}", chrono::Utc::now().timestamp());
-    let combined_output = format!("{}/combined.png", output_dir);
-    let mask_output = format!("{}/mask.png", output_dir);
-
-    // 出力ディレクトリの作成
-    std::fs::create_dir_all(&output_dir).unwrap();
-
     // パラメータの設定
     let slit_spacing = frame_count * slit_width;
 
     // GIFファイルの処理
-    process_gif_file(&input_path, &output_dir, slit_width, slit_spacing, frame_count);
-    
+    let frames = process_gif_file(&input_path, slit_width, slit_spacing, frame_count);
+    let first_img = frames.first().expect("データの読み込みに失敗しました。");
+    let (width, height) = first_img.dimensions();
+
     // フレームの結合
-    combine_png_files_skip_transparent(&output_dir, &combined_output);
+    let combine_data = combine_png_files_skip_transparent(frames);
     
-    // マスクの作成
-    create_stripe_mask(&combined_output, slit_width, slit_spacing, &mask_output);
+    let mask_data = create_stripe_mask(width, height, slit_width, slit_spacing);
 
     // 一時ファイルの削除
     let _ = std::fs::remove_file(input_path);
 
     HttpResponse::Ok().json(ProcessResponse {
         message: "処理が完了しました".to_string(),
-        output_path: combined_output,
-        mask_path: mask_output,
+        combine_data: BASE64.encode(&combine_data),
+        mask_data: BASE64.encode(&mask_data),
     })
 }
 
