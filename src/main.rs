@@ -4,16 +4,11 @@ use std::io::{BufReader, Read, Write};
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use actix_multipart::Multipart;
 use actix_files as fs;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::path::Path;
 use futures::{StreamExt, TryStreamExt};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
-#[derive(Deserialize)]
-struct SlitParams {
-    slit_width: u32,
-    frame_count: u32,
-}
 
 #[derive(Serialize)]
 struct ProcessResponse {
