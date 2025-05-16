@@ -47,28 +47,12 @@ fn apply_slit_transparency(
 
 // Process a GIF file, extracting each frame and applying the effect
 fn process_gif_file(
-    input_path: &str,
+    buffer: Vec<u8>,
     slit_width: u32,
     slit_spacing: u32,
     frame_count: u32,
-) -> Vec<DynamicImage>{        
-    // For GIF files, we need to re-open to get the frames
-    let file = match File::open(input_path) {
-        Ok(file) => file,
-        Err(e) => {
-            println!("Error reopening file: {:?}", e);
-            return vec![];
-        }
-    };
-    
-    let mut reader = BufReader::new(file);
-    let mut buffer = Vec::new();
-    if let Err(e) = reader.read_to_end(&mut buffer) {
-        println!("Error reading file: {:?}", e);
-        return vec![];
-    }
-    
-    // Decode GIF frames
+) -> Vec<DynamicImage> {
+    // Decode GIF frames directly from memory
     let frames = match image::codecs::gif::GifDecoder::new(std::io::Cursor::new(buffer)) {
         Ok(decoder) => decoder.into_frames().collect_frames().expect("Failed to collect frames"),
         Err(e) => {
@@ -162,7 +146,7 @@ fn create_stripe_mask(
 async fn process_image(mut payload: Multipart) -> impl Responder {
     let mut slit_width = 5;
     let mut frame_count = 8;
-    let mut temp_file_path = None;
+    let mut gif_buffer = Vec::new();
 
     // マルチパートデータの処理
     while let Ok(Some(mut field)) = payload.try_next().await {
@@ -171,17 +155,11 @@ async fn process_image(mut payload: Multipart) -> impl Responder {
 
         match field_name {
             "file" => {
-                // 一時ファイルの作成
-                let temp_path = format!("static/temp_{}.gif", chrono::Utc::now().timestamp());
-                let mut file = File::create(&temp_path).unwrap();
-                
-                // ファイルの保存
+                // メモリ上にGIFデータを保存
                 while let Some(chunk) = field.next().await {
                     let data = chunk.unwrap();
-                    file.write_all(&data).unwrap();
+                    gif_buffer.extend_from_slice(&data);
                 }
-                
-                temp_file_path = Some(temp_path);
             }
             "slit_width" => {
                 let mut value = String::new();
@@ -208,15 +186,15 @@ async fn process_image(mut payload: Multipart) -> impl Responder {
     }
 
     // ファイルがアップロードされていない場合
-    let input_path = match temp_file_path {
-        Some(path) => path,
-        None => return HttpResponse::BadRequest().body("ファイルがアップロードされていません"),
-    };
+    if gif_buffer.is_empty() {
+        return HttpResponse::BadRequest().body("ファイルがアップロードされていません");
+    }
+
     // パラメータの設定
     let slit_spacing = frame_count * slit_width;
 
     // GIFファイルの処理
-    let frames = process_gif_file(&input_path, slit_width, slit_spacing, frame_count);
+    let frames = process_gif_file(gif_buffer, slit_width, slit_spacing, frame_count);
     let first_img = frames.first().expect("データの読み込みに失敗しました。");
     let (width, height) = first_img.dimensions();
 
@@ -224,9 +202,6 @@ async fn process_image(mut payload: Multipart) -> impl Responder {
     let combine_data = combine_png_files_skip_transparent(frames);
     
     let mask_data = create_stripe_mask(width, height, slit_width, slit_spacing);
-
-    // 一時ファイルの削除
-    let _ = std::fs::remove_file(input_path);
 
     HttpResponse::Ok().json(ProcessResponse {
         message: "処理が完了しました".to_string(),
