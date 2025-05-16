@@ -21,6 +21,6 @@ jobs:
     - name: Run tests
       run: cargo test --verbose
     - name: Start server
-      run: cargo run
+      run: cargo run &
     - name: Access to the server
       run: curl http://localhost:8081
