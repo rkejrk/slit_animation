@@ -157,15 +157,37 @@ async fn process_image(mut payload: Multipart) -> impl Responder {
             "file" => {
                 // メモリ上にGIFデータを保存
                 while let Some(chunk) = field.next().await {
-                    let data = chunk.unwrap();
-                    gif_buffer.extend_from_slice(&data);
+                    match chunk {
+                        Ok(data) => gif_buffer.extend_from_slice(&data),
+                        Err(e) => {
+                            println!("Error reading file chunk: {:?}", e);
+                            return HttpResponse::InternalServerError().json(ProcessResponse {
+                                message: "ファイルの読み込みに失敗しました".to_string(),
+                                combine_data: String::new(),
+                                mask_data: String::new(),
+                            });
+                        }
+                    }
                 }
             }
             "slit_width" => {
                 let mut value = String::new();
                 while let Some(chunk) = field.next().await {
-                    let data = chunk.unwrap();
-                    value.push_str(std::str::from_utf8(&data).unwrap());
+                    match chunk {
+                        Ok(data) => {
+                            if let Ok(str_data) = std::str::from_utf8(&data) {
+                                value.push_str(str_data);
+                            }
+                        },
+                        Err(e) => {
+                            println!("Error reading slit_width: {:?}", e);
+                            return HttpResponse::InternalServerError().json(ProcessResponse {
+                                message: "パラメータ[slit_width]の読み込みに失敗しました".to_string(),
+                                combine_data: String::new(),
+                                mask_data: String::new(),
+                            });
+                        }
+                    }
                 }
                 if let Ok(width) = value.parse::<u32>() {
                     slit_width = width;
@@ -174,8 +196,21 @@ async fn process_image(mut payload: Multipart) -> impl Responder {
             "frame_count" => {
                 let mut value = String::new();
                 while let Some(chunk) = field.next().await {
-                    let data = chunk.unwrap();
-                    value.push_str(std::str::from_utf8(&data).unwrap());
+                    match chunk {
+                        Ok(data) => {
+                            if let Ok(str_data) = std::str::from_utf8(&data) {
+                                value.push_str(str_data);
+                            }
+                        },
+                        Err(e) => {
+                            println!("Error reading frame_count: {:?}", e);
+                            return HttpResponse::InternalServerError().json(ProcessResponse {
+                                message: "パラメータ[frame_count]の読み込みに失敗しました".to_string(),
+                                combine_data: String::new(),
+                                mask_data: String::new(),
+                            });
+                        }
+                    }
                 }
                 if let Ok(count) = value.parse::<u32>() {
                     frame_count = count;
@@ -187,7 +222,11 @@ async fn process_image(mut payload: Multipart) -> impl Responder {
 
     // ファイルがアップロードされていない場合
     if gif_buffer.is_empty() {
-        return HttpResponse::BadRequest().body("ファイルがアップロードされていません");
+        return HttpResponse::BadRequest().json(ProcessResponse {
+            message: "ファイルがアップロードされていません".to_string(),
+            combine_data: String::new(),
+            mask_data: String::new(),
+        });
     }
 
     // パラメータの設定
@@ -195,6 +234,14 @@ async fn process_image(mut payload: Multipart) -> impl Responder {
 
     // GIFファイルの処理
     let frames = process_gif_file(gif_buffer, slit_width, slit_spacing, frame_count);
+    if frames.is_empty() {
+        return HttpResponse::InternalServerError().json(ProcessResponse {
+            message: "GIFファイルの処理に失敗しました".to_string(),
+            combine_data: String::new(),
+            mask_data: String::new(),
+        });
+    }
+
     let first_img = frames.first().expect("データの読み込みに失敗しました。");
     let (width, height) = first_img.dimensions();
 
