@@ -1,0 +1,15 @@
+{
+  "name": "slit_animation",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "slit_animation_bg.wasm",
+    "slit_animation.js",
+    "slit_animation.d.ts"
+  ],
+  "main": "slit_animation.js",
+  "types": "slit_animation.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
