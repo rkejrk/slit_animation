@@ -130,12 +130,18 @@
                 transform: translateX(100%);
             }
         }
+        #loading {
+            text-align: center;
+            margin: 20px 0;
+            color: #666;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>スリットアニメーション作成ツール</h1>
-        <form id="uploadForm">
+        <div id="loading">WebAssemblyを読み込み中...</div>
+        <form id="uploadForm" style="display: none;">
             <div class="form-group">
                 <label for="gifFile">GIFファイルを選択:</label>
                 <input type="file" id="gifFile" accept=".gif" required>
@@ -154,7 +160,27 @@
         <div id="result"></div>
     </div>
 
-    <script>
+    <script type="module">
+        import init, { process_image_wasm } from './pkg/slit_animation.js';
+
+        let wasmModule = null;
+
+        // WebAssemblyモジュールの初期化
+        async function initWasm() {
+            try {
+                wasmModule = await init();
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('uploadForm').style.display = 'block';
+                console.log('WebAssemblyモジュールが読み込まれました');
+            } catch (error) {
+                console.error('WebAssemblyの読み込みに失敗しました:', error);
+                document.getElementById('loading').innerHTML = 'WebAssemblyの読み込みに失敗しました。ページを再読み込みしてください。';
+            }
+        }
+
+        // 初期化を開始
+        initWasm();
+
         const form = document.getElementById('uploadForm');
         const preview = document.getElementById('preview');
         const result = document.getElementById('result');
@@ -176,54 +202,57 @@
         form.addEventListener('submit', async function(e) {
             e.preventDefault();
             
-            const formData = new FormData();
+            if (!wasmModule) {
+                alert('WebAssemblyモジュールがまだ読み込まれていません。しばらく待ってから再試行してください。');
+                return;
+            }
+
             const fileInput = document.getElementById('gifFile');
-            const slitWidth = document.getElementById('slitWidth').value;
-            const frameCount = document.getElementById('frameCount').value;
+            const slitWidth = parseInt(document.getElementById('slitWidth').value);
+            const frameCount = parseInt(document.getElementById('frameCount').value);
 
             if (!fileInput.files[0]) {
                 alert('ファイルを選択してください');
                 return;
             }
 
-            formData.append('file', fileInput.files[0]);
-            formData.append('slit_width', slitWidth);
-            formData.append('frame_count', frameCount);
-
             submitButton.disabled = true;
             submitButton.textContent = '処理中...';
             result.innerHTML = '';
 
             try {
-                const response = await fetch('/process', {
-                    method: 'POST',
-                    body: formData
-                });
+                // ファイルをArrayBufferとして読み込み
+                const file = fileInput.files[0];
+                const arrayBuffer = await file.arrayBuffer();
+                const gifData = new Uint8Array(arrayBuffer);
 
-                if (!response.ok) {
-                    throw new Error('処理に失敗しました');
-                }
+                console.log('GIFデータを処理中...', gifData.length, 'bytes');
 
-                const data = await response.json();
+                // WebAssembly関数を呼び出し
+                const response = await process_image_wasm(gifData, slitWidth, frameCount);
+                
+                console.log('処理完了:', response);
+
                 result.innerHTML = `
                     <div class="result-container">
                         <div class="result-item">
                             <h3>結合画像</h3>
-                            <img src="data:image/png;base64,${data.combine_data}" alt="Combined Result">
+                            <img src="data:image/png;base64,${response.combine_data}" alt="Combined Result">
                         </div>
                         <div class="result-item">
                             <h3>マスク画像</h3>
-                            <img src="data:image/png;base64,${data.mask_data}" alt="Mask Result">
+                            <img src="data:image/png;base64,${response.mask_data}" alt="Mask Result">
                         </div>
                     </div>
                 
                     <div class="result-play">
-                        <img src="data:image/png;base64,${data.mask_data}" alt="Mask Result">
-                        <img src="data:image/png;base64,${data.combine_data}" alt="Combined Result">
+                        <img src="data:image/png;base64,${response.mask_data}" alt="Mask Result">
+                        <img src="data:image/png;base64,${response.combine_data}" alt="Combined Result">
                     </div>
                 `;
             } catch (error) {
-                result.innerHTML = `<div class="error">${error.message}</div>`;
+                console.error('処理エラー:', error);
+                result.innerHTML = `<div class="error">処理に失敗しました: ${error.message || error}</div>`;
             } finally {
                 submitButton.disabled = false;
                 submitButton.textContent = '処理開始';
